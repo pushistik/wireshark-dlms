@@ -21,12 +21,16 @@
 #define WS_BUILD_DLL
 #define NEW_PROTO_TREE_API
 #include <config.h>
+#include <epan/dissectors/packet-tcp.h>
 #include <epan/exceptions.h>
 #include <epan/expert.h>
 #include <epan/packet.h>
 #include <epan/reassemble.h>
 #include <ws_symbol_export.h>
 #include "obis.h"
+
+/* The TCP and UDP port number assigned by IANA for DLMS */
+#define DLMS_PORT 4059
 
 /* Choice values for the currently supported ACSE and xDLMS APDUs */
 #define DLMS_DATA_NOTIFICATION 15
@@ -2053,6 +2057,27 @@ dlms_dissect(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
     return tvb_captured_length(tvb);
 }
 
+static guint
+dlms_get_tcp_pdu_length(packet_info *pinfo, tvbuff_t *tvb, int offset, void *data)
+{
+    const int wrapper_header_length = 8;
+    int apdu_length;
+
+    if (tvb_reported_length_remaining(tvb, offset) < wrapper_header_length) {
+        return 0;
+    }
+    apdu_length = tvb_get_ntohs(tvb, offset + 6);
+
+    return wrapper_header_length + apdu_length;
+}
+
+static int
+dlms_dissect_tcp(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
+{
+    tcp_dissect_pdus(tvb, pinfo, tree, TRUE, 0, dlms_get_tcp_pdu_length, dlms_dissect, data);
+    return tvb_captured_length(tvb);
+}
+
 static void
 dlms_register_protoinfo(void)
 {
@@ -2103,10 +2128,16 @@ dlms_register_protoinfo(void)
         reassembly_table_init(&dlms_reassembly_table, &f);
     }
 
-    /* Register the DLMS dissector and the UDP port assigned by IANA for DLMS */
+    /* Register the DLMS dissector and the UDP handler */
     {
-        dissector_handle_t dh = register_dissector("DLMS", dlms_dissect, dlms_proto);
-        dissector_add_uint("udp.port", 4059, dh);
+        dissector_handle_t dh = register_dissector("dlms", dlms_dissect, dlms_proto);
+        dissector_add_uint("udp.port", DLMS_PORT, dh);
+    }
+
+    /* Register the TCP handler */
+    {
+        dissector_handle_t dh = create_dissector_handle(dlms_dissect_tcp, dlms_proto);
+        dissector_add_uint("tcp.port", DLMS_PORT, dh);
     }
 }
 
@@ -2114,7 +2145,7 @@ dlms_register_protoinfo(void)
  * The symbols that a Wireshark plugin is required to export.
  */
 
-#define DLMS_PLUGIN_VERSION "0.0.2"
+#define DLMS_PLUGIN_VERSION "0.0.3"
 
 #ifdef VERSION_RELEASE /* wireshark >= 2.6 */
 
